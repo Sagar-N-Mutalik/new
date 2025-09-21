@@ -1,5 +1,6 @@
 package com.quizApp.backendQuizApp.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -17,9 +18,9 @@ import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
-import java.util.ArrayList;
-import java.util.Iterator;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
@@ -33,7 +34,6 @@ public class GeminiAiService {
     public List<Question> generateQuestions(QuizGenerationRequest request) {
         String prompt = buildPrompt(request);
 
-        // Build payload: { "contents": [ { "parts": [ { "text": prompt } ] } ] }
         ObjectNode root = objectMapper.createObjectNode();
         ArrayNode contents = objectMapper.createArrayNode();
         ObjectNode contentObj = objectMapper.createObjectNode();
@@ -44,6 +44,12 @@ public class GeminiAiService {
         contentObj.set("parts", parts);
         contents.add(contentObj);
         root.set("contents", contents);
+
+        // Add generation config to enforce JSON output
+        ObjectNode generationConfig = objectMapper.createObjectNode();
+        generationConfig.put("response_mime_type", "application/json");
+        root.set("generationConfig", generationConfig);
+
 
         String uri = String.format("/models/%s:generateContent?key=%s",
                 geminiProperties.getModel(), geminiProperties.getApiKey());
@@ -65,67 +71,38 @@ public class GeminiAiService {
 
     private String buildPrompt(QuizGenerationRequest req) {
         StringBuilder sb = new StringBuilder();
-        sb.append("You are an expert quiz generator. Generate ")
-                .append(req.getNumberOfQuestions()).append(" questions on the topic: '")
-                .append(req.getTopic()).append("'. ");
-        sb.append("Difficulty: ").append(req.getDifficulty());
+        sb.append("Generate ").append(req.getNumberOfQuestions())
+                .append(" quiz questions for the topic: '").append(req.getTopic()).append("'.\n");
+        sb.append("Difficulty: ").append(req.getDifficulty()).append(".\n");
         if (StringUtils.isNotBlank(req.getCategory())) {
-            sb.append(", Category: ").append(req.getCategory());
+            sb.append("Category: ").append(req.getCategory()).append(".\n");
         }
-        sb.append(". Return STRICTLY valid JSON with this schema: \n");
-        sb.append("{\n  \"questions\": [\n    {\n      \"questionText\": \"string\",\n      \"type\": \"MULTIPLE_CHOICE|TRUE_FALSE|SINGLE_CHOICE\",\n      \"options\": [\"string\"],\n      \"correctAnswer\": \"string\",\n      \"explanation\": \"string\",\n      \"points\": 1,\n      \"difficulty\": \"EASY|MEDIUM|HARD\",\n      \"category\": \"string\",\n      \"tags\": [\"string\"]\n    }\n  ]\n}\n");
-        sb.append("Ensure options include the correct answer. Keep explanations concise.");
+        sb.append("Return a JSON object with a single key 'questions', which is an array of question objects. ");
+        sb.append("Each question object must have the following fields: 'questionText', 'type', 'options', 'correctAnswer', 'explanation', 'difficulty', 'category', and 'tags'.");
         return sb.toString();
     }
 
     private List<Question> parseQuestionsFromResponse(String response) {
-        List<Question> questions = new ArrayList<>();
-        if (response == null || response.isBlank()) return questions;
+        if (response == null || response.isBlank()) {
+            return Collections.emptyList();
+        }
         try {
             JsonNode root = objectMapper.readTree(response);
-            // Gemini returns candidates[0].content.parts[0].text containing JSON string
-            JsonNode candidates = root.path("candidates");
-            if (candidates.isArray() && candidates.size() > 0) {
-                JsonNode textNode = candidates.get(0)
-                        .path("content").path("parts");
-                String text;
-                if (textNode.isArray() && textNode.size() > 0) {
-                    text = textNode.get(0).path("text").asText("");
-                } else {
-                    text = candidates.get(0).path("content").path("text").asText("");
-                }
-                if (!text.isBlank()) {
-                    // Some models wrap JSON in markdown. Strip code fences if present.
-                    text = text.replaceAll("^```json\\n|```$", "").trim();
-                    JsonNode parsed = objectMapper.readTree(text);
-                    JsonNode qArr = parsed.path("questions");
-                    if (qArr.isArray()) {
-                        for (Iterator<JsonNode> it = qArr.elements(); it.hasNext(); ) {
-                            JsonNode q = it.next();
-                            Question.QuestionType type = Question.QuestionType.valueOf(q.path("type").asText("MULTIPLE_CHOICE"));
-                            Question.DifficultyLevel diff = Question.DifficultyLevel.valueOf(q.path("difficulty").asText("MEDIUM"));
-                            List<String> options = new ArrayList<>();
-                            if (q.path("options").isArray()) {
-                                q.path("options").forEach(n -> options.add(n.asText()));
-                            }
-                            questions.add(Question.builder()
-                                    .questionText(q.path("questionText").asText())
-                                    .type(type)
-                                    .options(options)
-                                    .correctAnswer(q.path("correctAnswer").asText())
-                                    .explanation(q.path("explanation").asText(null))
-                                    .points(q.path("points").asInt(1))
-                                    .difficulty(diff)
-                                    .category(q.path("category").asText(null))
-                                    .tags(q.path("tags").isArray() ? objectMapper.convertValue(q.path("tags"), objectMapper.getTypeFactory().constructCollectionType(List.class, String.class)) : null)
-                                    .build());
-                        }
-                    }
-                }
+            JsonNode textNode = root.at("/candidates/0/content/parts/0/text");
+
+            if (textNode.isMissingNode()) {
+                log.error("Could not find text in Gemini response: {}", response);
+                return Collections.emptyList();
             }
+
+            String jsonText = textNode.asText();
+            Map<String, List<Question>> result = objectMapper.readValue(jsonText, new TypeReference<>() {});
+
+            return result.getOrDefault("questions", Collections.emptyList());
+
         } catch (Exception e) {
-            log.error("Failed to parse Gemini response: {}", e.getMessage(), e);
+            log.error("Failed to parse Gemini response: {}", response, e);
+            return Collections.emptyList();
         }
-        return questions;
     }
 }
