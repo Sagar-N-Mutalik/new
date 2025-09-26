@@ -1,5 +1,16 @@
 package com.quizApp.backendQuizApp.service;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.BodyInserters;
+import org.springframework.web.reactive.function.client.WebClient;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,20 +18,12 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.quizApp.backendQuizApp.config.properties.GeminiProperties;
 import com.quizApp.backendQuizApp.dto.quiz.QuizGenerationRequest;
+import com.quizApp.backendQuizApp.exception.GeminiApiException;
 import com.quizApp.backendQuizApp.model.Question;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.StringUtils;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.BodyInserters;
-import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
-
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
 
 @Slf4j
 @Service
@@ -62,7 +65,7 @@ public class GeminiAiService {
                 .bodyToMono(String.class)
                 .onErrorResume(ex -> {
                     log.error("Gemini API error: {}", ex.getMessage(), ex);
-                    return Mono.just("{}");
+                    return Mono.error(new GeminiApiException("Failed to generate quiz from Gemini AI", ex));
                 })
                 .block();
 
@@ -84,25 +87,67 @@ public class GeminiAiService {
 
     private List<Question> parseQuestionsFromResponse(String response) {
         if (response == null || response.isBlank()) {
-            return Collections.emptyList();
+            throw new GeminiApiException("Received empty response from Gemini API");
         }
         try {
             JsonNode root = objectMapper.readTree(response);
-            JsonNode textNode = root.at("/candidates/0/content/parts/0/text");
+            
+            // Check if there are any error messages from Gemini
+            JsonNode errorNode = root.at("/error");
+            if (!errorNode.isMissingNode()) {
+                String errorMessage = errorNode.get("message").asText();
+                throw new GeminiApiException("Gemini API returned an error: " + errorMessage);
+            }
 
+            // Validate response structure
+            if (!root.has("candidates") || root.get("candidates").isEmpty()) {
+                throw new GeminiApiException("Invalid response structure: missing or empty candidates array");
+            }
+
+            JsonNode textNode = root.at("/candidates/0/content/parts/0/text");
             if (textNode.isMissingNode()) {
-                log.error("Could not find text in Gemini response: {}", response);
-                return Collections.emptyList();
+                throw new GeminiApiException("Could not find text content in Gemini response: " + response);
             }
 
             String jsonText = textNode.asText();
             Map<String, List<Question>> result = objectMapper.readValue(jsonText, new TypeReference<>() {});
+            
+            List<Question> questions = result.get("questions");
+            if (questions == null || questions.isEmpty()) {
+                throw new GeminiApiException("No questions generated in the response");
+            }
 
-            return result.getOrDefault("questions", Collections.emptyList());
+            // Validate each question
+            for (int i = 0; i < questions.size(); i++) {
+                Question question = questions.get(i);
+                validateQuestion(question, i + 1);
+            }
 
+            return questions;
+
+        } catch (GeminiApiException e) {
+            throw e; // Re-throw our custom exceptions
         } catch (Exception e) {
             log.error("Failed to parse Gemini response: {}", response, e);
-            return Collections.emptyList();
+            throw new GeminiApiException("Failed to process Gemini API response: " + e.getMessage(), e);
+        }
+    }
+
+    private void validateQuestion(Question question, int index) {
+        if (question.getQuestionText() == null || question.getQuestionText().isBlank()) {
+            throw new GeminiApiException("Question " + index + " is missing question text");
+        }
+        if (question.getType() == null) {
+            throw new GeminiApiException("Question " + index + " is missing question type");
+        }
+        if (question.getOptions() == null || question.getOptions().isEmpty()) {
+            throw new GeminiApiException("Question " + index + " is missing options");
+        }
+        if (question.getCorrectAnswer() == null || question.getCorrectAnswer().isBlank()) {
+            throw new GeminiApiException("Question " + index + " is missing correct answer");
+        }
+        if (!question.getOptions().contains(question.getCorrectAnswer())) {
+            throw new GeminiApiException("Question " + index + " has a correct answer that is not in the options");
         }
     }
 }

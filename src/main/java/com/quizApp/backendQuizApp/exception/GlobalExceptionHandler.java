@@ -1,6 +1,11 @@
 package com.quizApp.backendQuizApp.exception;
 
-import jakarta.servlet.http.HttpServletRequest;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -10,11 +15,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-import java.time.LocalDateTime;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import jakarta.servlet.http.HttpServletRequest;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -39,6 +40,18 @@ public class GlobalExceptionHandler {
         error.put("details", details);
         
         return ResponseEntity.badRequest().body(error);
+    }
+
+    @ExceptionHandler(GeminiApiException.class)
+    public ResponseEntity<Map<String, Object>> handleGeminiApiException(GeminiApiException ex, HttpServletRequest req) {
+        Map<String, Object> error = new HashMap<>();
+        error.put("timestamp", LocalDateTime.now());
+        error.put("status", HttpStatus.INTERNAL_SERVER_ERROR.value());
+        error.put("error", HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase());
+        error.put("message", ex.getMessage());
+        error.put("path", req.getRequestURI());
+
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
     }
 
     @ExceptionHandler({IllegalArgumentException.class, BadCredentialsException.class})

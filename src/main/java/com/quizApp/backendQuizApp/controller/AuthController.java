@@ -2,6 +2,7 @@ package com.quizApp.backendQuizApp.controller;
 
 import com.quizApp.backendQuizApp.dto.auth.AuthRequest;
 import com.quizApp.backendQuizApp.dto.auth.AuthResponse;
+import com.quizApp.backendQuizApp.dto.auth.RefreshRequest;
 import com.quizApp.backendQuizApp.dto.auth.RegisterRequest;
 import com.quizApp.backendQuizApp.model.User;
 import com.quizApp.backendQuizApp.service.AuthService;
@@ -29,7 +30,7 @@ public class AuthController {
     }
 
     @PostMapping("/refresh")
-    public ResponseEntity<AuthResponse> refresh(@RequestBody String refreshToken) {
-        return ResponseEntity.ok(authService.refresh(refreshToken));
+    public ResponseEntity<AuthResponse> refresh(@RequestBody @Valid RefreshRequest request) {
+        return ResponseEntity.ok(authService.refresh(request.getRefreshToken()));
     }
 }
